@@ -1,0 +1,281 @@
+ctrl <- trainControl(
+    method = "repeatedcv",
+    number = 2,
+    repeats = 5)
+
+set.seed(1993)
+
+ctrl2 <- trainControl(method = "adaptive_cv",
+                      repeats = 5,
+                      verboseIter = TRUE)
+
+rf_fit <- train(length ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             ntree = 5)
+
+rf_pred <- predict(rf_fit, testing)
+
+postResample(pred = rf_pred, obs = testing$length) ---
+title: "Analysis of possible causes of decreasing herring size in Europe"
+author: "Filip Skurniak"
+date: "17 listopada 2016"
+output:
+  html_document:
+    fig_height: 6
+    fig_width: 8
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Introduction
+
+## Loading libraries 
+```{r libraries, results='hide', warning=FALSE, message=FALSE,error=FALSE} 
+library('dplyr') # data manipulation
+library('reshape2') # data manipulation
+library('ggplot2') # visualization
+library('knitr')
+library('plotly') # visualization
+library('corrplot') # package corrplot
+library('caret') # data mining
+library('zoo') # NA values approximation
+```
+
+## Loading data
+```{r importDataset, cache=TRUE}
+ds <- read.csv(url("http://www.cs.put.poznan.pl/dbrzezinski/teaching/zed/sledzie.csv"),na.strings = c("NA","NaN", " ","?") )
+ds <- tbl_df(ds)
+```
+
+## Explanation of attributes
+
+X may be considered as main Id and indicates chronological order. The lower the value the older is the sample. 
+
+Variable Name |         Description        |        Units               |
+--------------|----------------------------|----------------------------|
+length| length of herring | [cm]
+cfin1| accessibility of plankton | [concentration of Calanus finmarchicus spec. 1];
+cfin2| accessibility of plankton | [concentration of Calanus finmarchicus spec. 2];
+chel1| accessibility of plankton | [concentration of Calanus helgolandicus spec. 1];
+chel2| accessibility of plankton | [concentration of Calanus helgolandicus spec. 2];
+lcop1| accessibility of plankton | [concentration of Copepoda spec. 1];
+lcop2| accessibility of plankton | [concentration of Copepoda spec. 2];
+fbar| intensity of fishing in region | [fraction of preserved fry];
+recr| annual fry | [number of herrings];
+cumf| total annual intensity of fishing in region | [fraction of preserved fry];
+totaln| total number of fishes catched during a single fishing | [number of herrings];
+sst| temperature of the water at the surface | [°C];
+sal| level of salinity | [Knudsen ppt];
+xmonth| month of fishing | [number of month];
+nao| North Atlantic oscillation (difference of atmospheric pressure at sea level between the Icelandic low and the Azores high) | [mb]
+
+
+# Exploration
+
+## Basic statistics 
+
+Empty values are not significant.
+
+```{r initialProcessing , cache=TRUE}
+
+knitr::kable(summary(ds))
+
+```
+
+## Data distribution 
+
+```{r histograms, warning=FALSE, error=FALSE, cache=F}
+
+d <- melt(ds[,-c(1)])
+
+ggplot(d,aes(x = value)) + 
+    facet_wrap(~variable,scales = "free_x") + 
+    geom_histogram()
+
+```
+
+
+```{r include=FALSE, results='hide', cache=F}
+
+mymonths <- c("Jan","Feb","Mar",
+              "Apr","May","Jun",
+              "Jul","Aug","Sep",
+              "Oct","Nov","Dec")
+
+month_labeller <- function(variable,value){
+  return(mymonths[value])
+}
+
+```
+
+## What is the length and time correlation ? 
+
+### Full history
+
+```{r timeToLength, warning=FALSE, cache=F}
+
+p1 <- ggplot(ds,aes(X,length)) + geom_point(alpha=0.04) + geom_smooth(method="auto", se=TRUE, color="red")
+
+plt1 <- htmltools::tagList()
+
+plt1 <- as.widget(ggplotly(p1)) 
+
+plt1
+
+```
+
+### History of length in months
+
+```{r timeToLengthToMonth, warning=FALSE, cache=F}
+
+p2 <- ggplot(ds,aes(X,length, group = xmonth)) + geom_point(stat = "identity",alpha=0.03 ) + geom_smooth(method="auto", se=TRUE,color="red") + facet_grid(~xmonth, scales = "fixed") + facet_wrap(~ xmonth, ncol = 3,labeller = month_labeller) + theme_minimal()
+
+plt2 <- htmltools::tagList()
+
+plt2 <- as.widget(ggplotly(p2)) 
+
+plt2
+
+```
+
+## Preparing data
+
+Data set is split into training and test data set.
+
+```{r  warning=FALSE,cache=F}
+
+set.seed(1993)
+
+ds2 <- ds %>% select(-c(X))
+
+inTraining <- 
+    createDataPartition(
+        y = ds2$length,
+        p = .75,
+        list = FALSE)
+
+training <- ds2[ inTraining,]
+testing  <- ds2[-inTraining,]
+
+
+```
+
+
+## Handling NAs nulls and emptities
+
+Just by looking through the data low standard deviation per month for every attribute can be noticed. Many values seems to be duplicated or changed insignificantly. Simple approximation is used to determine missing values. Every row where value of NA was not determined by this method is deleted. Testing set is reduced to complete cases only.
+
+```{r warning=FALSE, cache=TRUE}
+
+set.seed(1993)
+
+for(i in 1:ncol(training)){
+  if(anyNA(ds2[,i])){
+    training[,i] <- na.approx(training[,i],na.rm = F,maxgap = 5)
+  }
+}
+
+
+training <- training[complete.cases(training),]
+testing <- testing[complete.cases(testing),]
+
+
+knitr::kable(summary(training))
+knitr::kable(summary(testing))
+
+```
+
+
+## Attribute correlation
+
+Length attribute seems to be negatively correlated to time and North Atlantic oscillation but is positively correlated to intensity of fishing in region. Moreover length is negatively correlated to temperature of the water at the surface. Other correlations confirms validity of data. For example total number of fishes catched during a single fishing is correlated to total annual intensity of fishing in region.
+
+```{r correlations, warning=FALSE, cache=F}
+
+knitr::kable(cor(training))
+
+corrplot(cor(training))
+
+```
+
+
+
+## Regression
+
+Building regression model is checked with two measures RMSE and R^2. Best regression model was built using random forest algorithm. 
+
+```{r regression,  warning=FALSE, cache=F }
+
+set.seed(1993)
+
+ctrl <- trainControl(
+    method = "repeatedcv",
+    number = 2,
+    repeats = 5)
+
+set.seed(1993)
+
+rf_fit <- train(length ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             importance = TRUE,
+             ntree = 5)
+
+rf_pred <- predict(rf_fit, testing)
+
+rf_fit
+
+postResample(pred = rf_pred, obs = testing$length) 
+
+
+rf_fit2 <- train(length ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             importance = TRUE,
+             
+             ntree = 15)
+
+rf_pred2 <- predict(rf_fit2, testing)
+
+rf_fit2
+
+postResample(pred = rf_pred2, obs = testing$length) 
+
+
+```
+
+
+## Attribute significance
+
+Results for ntree = 5
+```{r attrSignificance1, cache=F, warning=F, error=F}
+
+imp1 <- varImp(rf_fit$finalModel, scale=FALSE)
+
+knitr::kable(imp1)
+
+
+```
+
+Results for ntree = 15
+```{r attrSignificance2, cache=F, warning=F, error=F}
+
+imp2 <- varImp(rf_fit2$finalModel, scale=FALSE)
+
+knitr::kable(imp2)
+
+
+```
+
+## Conclusion
+
+The attributes with impact for length of herrings are temperature of the water at the surface and north Atlantic oscillation. 
